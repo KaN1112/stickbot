@@ -5,8 +5,8 @@ GitHub に置いて Render へデプロイし、招待 URL から複数の Disco
 
 ## できること
 
+- `/sticky` のスラッシュコマンドで設定できます
 - 複数サーバーで利用できます
-- サーバー管理者が Discord 上で sticky message を設定できます
 - チャンネルごとに別々の sticky message を保存できます
 - 誰かが投稿したあと、古い sticky message を削除して一番下へ再投稿します
 - Render の Web Service として動きます
@@ -17,7 +17,11 @@ GitHub に置いて Render へデプロイし、招待 URL から複数の Disco
 1. [Discord Developer Portal](https://discord.com/developers/applications) でアプリを作成します。
 2. `Bot` 画面で bot を追加し、token を控えます。
 3. `General Information` 画面で `Application ID` を控えます。これを `CLIENT_ID` に使います。
-4. `Bot` 画面の `Privileged Gateway Intents` で `Message Content Intent` を有効にします。
+
+必要な OAuth2 scopes:
+
+- `bot`
+- `applications.commands`
 
 必要な bot 権限:
 
@@ -26,6 +30,8 @@ GitHub に置いて Render へデプロイし、招待 URL から複数の Disco
 - `Manage Messages`
 - `Read Message History`
 
+この bot は通常メッセージの中身を読まないため、`Message Content Intent` は不要です。
+
 ## ローカル実行
 
 `.env.example` を参考に `.env` を作成します。
@@ -33,7 +39,6 @@ GitHub に置いて Render へデプロイし、招待 URL から複数の Disco
 ```env
 DISCORD_TOKEN=your_discord_bot_token
 CLIENT_ID=your_discord_application_client_id
-COMMAND_PREFIX=!sticky
 MOVE_DELAY_MS=3500
 DATA_FILE=data/sticky-messages.json
 ```
@@ -74,31 +79,31 @@ https://your-service.onrender.com/invite
 サーバー管理権限を持つ人だけが設定できます。
 
 ```text
-!sticky set 表示したい文章
+/sticky set message:表示したい文章
 ```
 
 今いるチャンネルに sticky message を設定します。設定後、bot がその文章を一番下へ投稿します。
 
 ```text
-!sticky unset
+/sticky unset
 ```
 
 今いるチャンネルの sticky message を解除します。
 
 ```text
-!sticky move
+/sticky move
 ```
 
 今いるチャンネルの sticky message を手動で一番下へ置き直します。
 
 ```text
-!sticky preview
+/sticky preview
 ```
 
 今いるチャンネルに設定されている sticky message を確認します。
 
 ```text
-!sticky list
+/sticky list
 ```
 
 そのサーバーで sticky message が設定されているチャンネルを一覧表示します。
@@ -107,8 +112,13 @@ https://your-service.onrender.com/invite
 
 1. bot の `/invite` URL を相手サーバーの管理者へ渡します。
 2. 管理者が自分のサーバーへ bot を招待します。
-3. sticky message を置きたいチャンネルで `!sticky set 文章` を実行します。
+3. sticky message を置きたいチャンネルで `/sticky set` を実行します。
 4. 以後、そのチャンネルで投稿があるたびに sticky message が一番下へ戻ります。
+
+## スラッシュコマンドが出ないとき
+
+グローバルのスラッシュコマンドは Discord 側に反映されるまで少し時間がかかることがあります。
+また、古い招待 URL で導入した場合は `applications.commands` scope が付いていない可能性があります。その場合は `/invite` から招待し直してください。
 
 ## 保存について
 
