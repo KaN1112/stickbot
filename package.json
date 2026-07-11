@@ -1,0 +1,17 @@
+{
+  "name": "stickbot-github-render",
+  "version": "1.0.0",
+  "description": "A Discord sticky-message bot ready for GitHub and Render.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --env-file=.env src/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.3",
+    "express": "^4.19.2"
+  }
+}
