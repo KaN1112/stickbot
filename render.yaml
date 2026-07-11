@@ -13,8 +13,6 @@ services:
         sync: false
       - key: CLIENT_ID
         sync: false
-      - key: COMMAND_PREFIX
-        value: "!sticky"
       - key: MOVE_DELAY_MS
         value: "3500"
       - key: DATA_FILE
