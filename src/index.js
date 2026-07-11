@@ -6,11 +6,13 @@ const {
   GatewayIntentBits,
   Partials,
   PermissionsBitField,
+  REST,
+  Routes,
+  SlashCommandBuilder,
 } = require("discord.js");
 
 const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.CLIENT_ID;
-const commandPrefix = process.env.COMMAND_PREFIX || "!sticky";
 const moveDelayMs = Number(process.env.MOVE_DELAY_MS || 3500);
 const dataFile = process.env.DATA_FILE || path.join(process.cwd(), "data", "sticky-messages.json");
 const marker = "\u200B\u200C\u200D";
@@ -27,30 +29,89 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
   ],
   partials: [Partials.Channel],
 });
 
-client.once("ready", () => {
+client.once("ready", async () => {
   console.log(`Logged in as ${client.user.tag}`);
   console.log(`Sticky channels: ${stickyConfig.size}`);
+  await registerSlashCommands();
 });
 
 client.on("messageCreate", async (message) => {
   if (!message.guild || message.author.bot) return;
-
-  if (message.content.startsWith(commandPrefix)) {
-    await handleStickyCommand(message);
-    return;
-  }
-
   if (!stickyConfig.has(message.channelId)) return;
   scheduleStickyMove(message.channelId);
 });
 
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isChatInputCommand() || interaction.commandName !== "sticky") return;
+  await handleStickyInteraction(interaction);
+});
+
 client.login(token);
 startHealthServer();
+
+function buildSlashCommands() {
+  return [
+    new SlashCommandBuilder()
+      .setName("sticky")
+      .setDescription("Sticky messageを管理します")
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
+      .addSubcommand((subcommand) =>
+        subcommand
+          .setName("set")
+          .setDescription("このチャンネルにsticky messageを設定します")
+          .addStringOption((option) =>
+            option
+              .setName("message")
+              .setDescription("一番下に置いておきたい文章")
+              .setRequired(true),
+          ),
+      )
+      .addSubcommand((subcommand) =>
+        subcommand
+          .setName("unset")
+          .setDescription("このチャンネルのsticky messageを解除します"),
+      )
+      .addSubcommand((subcommand) =>
+        subcommand
+          .setName("move")
+          .setDescription("sticky messageを手動で一番下へ移動します"),
+      )
+      .addSubcommand((subcommand) =>
+        subcommand
+          .setName("preview")
+          .setDescription("このチャンネルのsticky messageを確認します"),
+      )
+      .addSubcommand((subcommand) =>
+        subcommand
+          .setName("list")
+          .setDescription("このサーバーの設定済みチャンネルを表示します"),
+      )
+      .toJSON(),
+  ];
+}
+
+async function registerSlashCommands() {
+  const resolvedClientId = clientId || client.user?.id;
+  if (!resolvedClientId) {
+    console.warn("CLIENT_ID is missing. Slash commands were not registered.");
+    return;
+  }
+
+  try {
+    const rest = new REST({ version: "10" }).setToken(token);
+    await rest.put(
+      Routes.applicationCommands(resolvedClientId),
+      { body: buildSlashCommands() },
+    );
+    console.log("Slash commands registered.");
+  } catch (error) {
+    console.error("Failed to register slash commands.", error);
+  }
+}
 
 function loadStickyConfig() {
   const config = new Map();
@@ -174,82 +235,86 @@ async function deletePreviousSticky(channel) {
   }
 }
 
-async function handleStickyCommand(message) {
-  if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
-    await message.reply("この設定はサーバー管理権限のある人だけが使えます。");
+async function handleStickyInteraction(interaction) {
+  if (!interaction.inGuild()) {
+    await interaction.reply({ content: "サーバー内で使ってください。", ephemeral: true });
     return;
   }
 
-  const [, subcommand, ...rest] = message.content.split(/\s+/);
+  if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.ManageGuild)) {
+    await interaction.reply({
+      content: "この設定はサーバー管理権限のある人だけが使えます。",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const subcommand = interaction.options.getSubcommand();
 
   if (subcommand === "set") {
-    const content = rest.join(" ").trim();
-    if (!content) {
-      await message.reply(`使い方: \`${commandPrefix} set 表示したい文章\``);
-      return;
-    }
-
-    stickyConfig.set(message.channelId, {
-      guildId: message.guildId,
-      channelId: message.channelId,
+    const content = interaction.options.getString("message", true).trim();
+    stickyConfig.set(interaction.channelId, {
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
       content,
     });
     saveStickyConfig();
-    await message.reply("このチャンネルの sticky message を保存しました。");
-    await moveStickyMessage(message.channelId);
+
+    await interaction.reply({
+      content: "このチャンネルの sticky message を保存しました。",
+      ephemeral: true,
+    });
+    await moveStickyMessage(interaction.channelId);
     return;
   }
 
-  if (subcommand === "unset" || subcommand === "clear") {
-    stickyConfig.delete(message.channelId);
+  if (subcommand === "unset") {
+    stickyConfig.delete(interaction.channelId);
     saveStickyConfig();
-    await deletePreviousSticky(message.channel).catch(() => {});
-    await message.reply("このチャンネルの sticky message を解除しました。");
+    await deletePreviousSticky(interaction.channel).catch(() => {});
+    await interaction.reply({
+      content: "このチャンネルの sticky message を解除しました。",
+      ephemeral: true,
+    });
     return;
   }
 
   if (subcommand === "move") {
-    if (!stickyConfig.has(message.channelId)) {
-      await message.reply("このチャンネルには sticky message が設定されていません。");
+    if (!stickyConfig.has(interaction.channelId)) {
+      await interaction.reply({
+        content: "このチャンネルには sticky message が設定されていません。",
+        ephemeral: true,
+      });
       return;
     }
 
-    await message.delete().catch(() => {});
-    await moveStickyMessage(message.channelId);
+    await interaction.deferReply({ ephemeral: true });
+    await moveStickyMessage(interaction.channelId);
+    await interaction.editReply("sticky message を一番下へ移動しました。");
     return;
   }
 
   if (subcommand === "preview") {
-    const item = stickyConfig.get(message.channelId);
-    await message.reply(item?.content || "このチャンネルには sticky message が設定されていません。");
+    const item = stickyConfig.get(interaction.channelId);
+    await interaction.reply({
+      content: item?.content || "このチャンネルには sticky message が設定されていません。",
+      ephemeral: true,
+    });
     return;
   }
 
   if (subcommand === "list") {
-    const items = [...stickyConfig.values()].filter((item) => item.guildId === message.guildId);
-    if (items.length === 0) {
-      await message.reply("このサーバーには sticky message がまだ設定されていません。");
-      return;
-    }
-
-    await message.reply(
-      items
-        .map((item) => `<#${item.channelId}>`)
-        .join("\n"),
+    const items = [...stickyConfig.values()].filter(
+      (item) => item.guildId === interaction.guildId,
     );
-    return;
-  }
 
-  await message.reply(
-    [
-      "使い方:",
-      `\`${commandPrefix} set 文章\` このチャンネルに sticky message を設定`,
-      `\`${commandPrefix} unset\` このチャンネルの設定を解除`,
-      `\`${commandPrefix} move\` sticky message を一番下へ移動`,
-      `\`${commandPrefix} preview\` 現在の文章を確認`,
-      `\`${commandPrefix} list\` このサーバーの設定済みチャンネルを表示`,
-    ].join("\n"),
-  );
+    await interaction.reply({
+      content: items.length > 0
+        ? items.map((item) => `<#${item.channelId}>`).join("\n")
+        : "このサーバーには sticky message がまだ設定されていません。",
+      ephemeral: true,
+    });
+  }
 }
 
 async function ensureManageable(channel) {
@@ -275,7 +340,7 @@ function getInviteUrl() {
   if (!resolvedClientId) return null;
 
   const permissions = "76800";
-  const scope = encodeURIComponent("bot");
+  const scope = encodeURIComponent("bot applications.commands");
   return `https://discord.com/oauth2/authorize?client_id=${resolvedClientId}&permissions=${permissions}&scope=${scope}`;
 }
 
