@@ -14,6 +14,7 @@ const {
 const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.CLIENT_ID;
 const moveDelayMs = Number(process.env.MOVE_DELAY_MS || 3500);
+const autoRefreshMinutes = Number(process.env.AUTO_REFRESH_MINUTES || 5);
 const dataFile = process.env.DATA_FILE || path.join(process.cwd(), "data", "sticky-messages.json");
 const marker = "\u200B\u200C\u200D";
 const state = new Map();
@@ -37,6 +38,7 @@ client.once("ready", async () => {
   console.log(`Logged in as ${client.user.tag}`);
   console.log(`Sticky channels: ${stickyConfig.size}`);
   await registerSlashCommands();
+  startAutoRefresh();
 });
 
 client.on("messageCreate", async (message) => {
@@ -57,38 +59,38 @@ function buildSlashCommands() {
   return [
     new SlashCommandBuilder()
       .setName("sticky")
-      .setDescription("Sticky messageを管理します")
+      .setDescription("Manage sticky messages")
       .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
       .addSubcommand((subcommand) =>
         subcommand
           .setName("set")
-          .setDescription("このチャンネルにsticky messageを設定します")
+          .setDescription("Set a sticky message in this channel")
           .addStringOption((option) =>
             option
               .setName("message")
-              .setDescription("一番下に置いておきたい文章")
+              .setDescription("Message to keep at the bottom")
               .setRequired(true),
           ),
       )
       .addSubcommand((subcommand) =>
         subcommand
           .setName("unset")
-          .setDescription("このチャンネルのsticky messageを解除します"),
+          .setDescription("Remove the sticky message from this channel"),
       )
       .addSubcommand((subcommand) =>
         subcommand
           .setName("move")
-          .setDescription("sticky messageを手動で一番下へ移動します"),
+          .setDescription("Move the sticky message to the bottom now"),
       )
       .addSubcommand((subcommand) =>
         subcommand
           .setName("preview")
-          .setDescription("このチャンネルのsticky messageを確認します"),
+          .setDescription("Show the sticky message for this channel"),
       )
       .addSubcommand((subcommand) =>
         subcommand
           .setName("list")
-          .setDescription("このサーバーの設定済みチャンネルを表示します"),
+          .setDescription("List sticky channels in this server"),
       )
       .toJSON(),
   ];
@@ -192,6 +194,55 @@ function scheduleStickyMove(channelId) {
   );
 }
 
+function startAutoRefresh() {
+  if (!Number.isFinite(autoRefreshMinutes) || autoRefreshMinutes <= 0) {
+    console.log("Auto refresh is disabled.");
+    return;
+  }
+
+  const intervalMs = autoRefreshMinutes * 60 * 1000;
+  setInterval(() => {
+    refreshAllStickyMessages().catch((error) => {
+      console.error("Auto refresh failed.", error);
+    });
+  }, intervalMs);
+
+  setTimeout(() => {
+    refreshAllStickyMessages().catch((error) => {
+      console.error("Initial auto refresh failed.", error);
+    });
+  }, 15_000);
+
+  console.log(`Auto refresh every ${autoRefreshMinutes} minute(s).`);
+}
+
+async function refreshAllStickyMessages() {
+  for (const channelId of stickyConfig.keys()) {
+    await ensureStickyIsLast(channelId).catch((error) => {
+      console.error(`Failed to refresh sticky message for ${channelId}:`, error);
+    });
+  }
+}
+
+async function ensureStickyIsLast(channelId) {
+  const channel = await client.channels.fetch(channelId);
+  if (!channel?.isTextBased()) return;
+
+  const item = stickyConfig.get(channelId);
+  if (!item?.content) return;
+
+  await ensureManageable(channel);
+
+  const recentMessages = await channel.messages.fetch({ limit: 10 });
+  const latest = recentMessages.first();
+  if (latest?.author.id === client.user.id && latest.content.startsWith(marker)) {
+    state.set(channelId, latest.id);
+    return;
+  }
+
+  await moveStickyMessage(channelId);
+}
+
 async function moveStickyMessage(channelId) {
   const channel = await client.channels.fetch(channelId);
   if (!channel?.isTextBased()) return;
@@ -237,13 +288,13 @@ async function deletePreviousSticky(channel) {
 
 async function handleStickyInteraction(interaction) {
   if (!interaction.inGuild()) {
-    await interaction.reply({ content: "サーバー内で使ってください。", ephemeral: true });
+    await interaction.reply({ content: "Use this command in a server.", ephemeral: true });
     return;
   }
 
   if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.ManageGuild)) {
     await interaction.reply({
-      content: "この設定はサーバー管理権限のある人だけが使えます。",
+      content: "Only server managers can change sticky messages.",
       ephemeral: true,
     });
     return;
@@ -261,7 +312,7 @@ async function handleStickyInteraction(interaction) {
     saveStickyConfig();
 
     await interaction.reply({
-      content: "このチャンネルの sticky message を保存しました。",
+      content: "Sticky message saved. It will stay at the bottom automatically.",
       ephemeral: true,
     });
     await moveStickyMessage(interaction.channelId);
@@ -273,7 +324,7 @@ async function handleStickyInteraction(interaction) {
     saveStickyConfig();
     await deletePreviousSticky(interaction.channel).catch(() => {});
     await interaction.reply({
-      content: "このチャンネルの sticky message を解除しました。",
+      content: "Sticky message removed from this channel.",
       ephemeral: true,
     });
     return;
@@ -282,7 +333,7 @@ async function handleStickyInteraction(interaction) {
   if (subcommand === "move") {
     if (!stickyConfig.has(interaction.channelId)) {
       await interaction.reply({
-        content: "このチャンネルには sticky message が設定されていません。",
+        content: "No sticky message is set in this channel.",
         ephemeral: true,
       });
       return;
@@ -290,14 +341,14 @@ async function handleStickyInteraction(interaction) {
 
     await interaction.deferReply({ ephemeral: true });
     await moveStickyMessage(interaction.channelId);
-    await interaction.editReply("sticky message を一番下へ移動しました。");
+    await interaction.editReply("Sticky message moved to the bottom.");
     return;
   }
 
   if (subcommand === "preview") {
     const item = stickyConfig.get(interaction.channelId);
     await interaction.reply({
-      content: item?.content || "このチャンネルには sticky message が設定されていません。",
+      content: item?.content || "No sticky message is set in this channel.",
       ephemeral: true,
     });
     return;
@@ -311,7 +362,7 @@ async function handleStickyInteraction(interaction) {
     await interaction.reply({
       content: items.length > 0
         ? items.map((item) => `<#${item.channelId}>`).join("\n")
-        : "このサーバーには sticky message がまだ設定されていません。",
+        : "No sticky messages are set in this server.",
       ephemeral: true,
     });
   }
@@ -354,6 +405,7 @@ function startHealthServer() {
       bot: client.user?.tag || "starting",
       guilds: client.guilds.cache.size,
       stickyChannels: stickyConfig.size,
+      autoRefreshMinutes,
       inviteUrl: getInviteUrl(),
     });
   });
