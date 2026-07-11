@@ -15,5 +15,7 @@ services:
         sync: false
       - key: MOVE_DELAY_MS
         value: "3500"
+      - key: AUTO_REFRESH_MINUTES
+        value: "5"
       - key: DATA_FILE
         value: data/sticky-messages.json
