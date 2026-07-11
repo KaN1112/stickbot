@@ -49,7 +49,16 @@ client.on("messageCreate", async (message) => {
 
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand() || interaction.commandName !== "sticky") return;
-  await handleStickyInteraction(interaction);
+  await handleStickyInteraction(interaction).catch(async (error) => {
+    console.error("Sticky interaction failed.", error);
+    const content = `Sticky failed: ${error.message}`;
+
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply(content).catch(() => {});
+    } else {
+      await interaction.reply({ content, ephemeral: true }).catch(() => {});
+    }
+  });
 });
 
 client.login(token);
@@ -91,6 +100,11 @@ function buildSlashCommands() {
         subcommand
           .setName("list")
           .setDescription("List sticky channels in this server"),
+      )
+      .addSubcommand((subcommand) =>
+        subcommand
+          .setName("status")
+          .setDescription("Check whether sticky can update in this channel"),
       )
       .toJSON(),
   ];
@@ -304,6 +318,8 @@ async function handleStickyInteraction(interaction) {
 
   if (subcommand === "set") {
     const content = interaction.options.getString("message", true).trim();
+    await interaction.deferReply({ ephemeral: true });
+
     stickyConfig.set(interaction.channelId, {
       guildId: interaction.guildId,
       channelId: interaction.channelId,
@@ -311,22 +327,17 @@ async function handleStickyInteraction(interaction) {
     });
     saveStickyConfig();
 
-    await interaction.reply({
-      content: "Sticky message saved. It will stay at the bottom automatically.",
-      ephemeral: true,
-    });
     await moveStickyMessage(interaction.channelId);
+    await interaction.editReply("Sticky message saved and moved to the bottom.");
     return;
   }
 
   if (subcommand === "unset") {
+    await interaction.deferReply({ ephemeral: true });
     stickyConfig.delete(interaction.channelId);
     saveStickyConfig();
     await deletePreviousSticky(interaction.channel).catch(() => {});
-    await interaction.reply({
-      content: "Sticky message removed from this channel.",
-      ephemeral: true,
-    });
+    await interaction.editReply("Sticky message removed from this channel.");
     return;
   }
 
@@ -365,7 +376,45 @@ async function handleStickyInteraction(interaction) {
         : "No sticky messages are set in this server.",
       ephemeral: true,
     });
+    return;
   }
+
+  if (subcommand === "status") {
+    await interaction.deferReply({ ephemeral: true });
+    const status = await getStickyStatus(interaction.channel);
+    await interaction.editReply(status.join("\n"));
+  }
+}
+
+async function getStickyStatus(channel) {
+  const lines = [];
+  const item = stickyConfig.get(channel.id);
+  const me = channel.guild.members.me || (await channel.guild.members.fetchMe());
+  const permissions = channel.permissionsFor(me);
+  const required = [
+    ["View Channel", PermissionsBitField.Flags.ViewChannel],
+    ["Send Messages", PermissionsBitField.Flags.SendMessages],
+    ["Manage Messages", PermissionsBitField.Flags.ManageMessages],
+    ["Read Message History", PermissionsBitField.Flags.ReadMessageHistory],
+  ];
+  const missing = required
+    .filter(([, permission]) => !permissions?.has(permission))
+    .map(([name]) => name);
+
+  lines.push(item ? "Setting: found for this channel" : "Setting: not set for this channel");
+  lines.push(missing.length === 0
+    ? "Permissions: OK"
+    : `Permissions missing: ${missing.join(", ")}`);
+  lines.push(`Auto refresh: ${autoRefreshMinutes > 0 ? `${autoRefreshMinutes} minute(s)` : "disabled"}`);
+
+  if (missing.length === 0) {
+    const recentMessages = await channel.messages.fetch({ limit: 10 });
+    const latest = recentMessages.first();
+    const latestIsSticky = latest?.author.id === client.user.id && latest.content.startsWith(marker);
+    lines.push(latestIsSticky ? "Position: sticky is already at the bottom" : "Position: sticky is not at the bottom");
+  }
+
+  return lines;
 }
 
 async function ensureManageable(channel) {
