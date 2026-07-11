@@ -8,8 +8,8 @@ GitHub に置いて Render へデプロイし、招待 URL から複数の Disco
 - `/sticky` のスラッシュコマンドで設定できます
 - 複数サーバーで利用できます
 - チャンネルごとに別々の sticky message を保存できます
-- 誰かが投稿したあと、古い sticky message を削除して一番下へ再投稿します
-- Render の Web Service として動きます
+- 誰かが投稿したあと、自動で sticky message を一番下へ再投稿します
+- 投稿イベントを取りこぼした場合も、一定間隔で見回って一番下へ戻します
 - `/invite` にアクセスすると bot 招待 URL へ移動します
 
 ## Discord 側の準備
@@ -40,6 +40,7 @@ GitHub に置いて Render へデプロイし、招待 URL から複数の Disco
 DISCORD_TOKEN=your_discord_bot_token
 CLIENT_ID=your_discord_application_client_id
 MOVE_DELAY_MS=3500
+AUTO_REFRESH_MINUTES=5
 DATA_FILE=data/sticky-messages.json
 ```
 
@@ -83,6 +84,7 @@ https://your-service.onrender.com/invite
 ```
 
 今いるチャンネルに sticky message を設定します。設定後、bot がその文章を一番下へ投稿します。
+その後は、誰かが投稿するたびに自動で sticky message が一番下へ戻ります。
 
 ```text
 /sticky unset
@@ -107,6 +109,18 @@ https://your-service.onrender.com/invite
 ```
 
 そのサーバーで sticky message が設定されているチャンネルを一覧表示します。
+
+## 自動更新について
+
+通常は、ユーザーが投稿した直後に sticky message を削除して再投稿します。
+
+さらに `AUTO_REFRESH_MINUTES` ごとに、設定済みチャンネルを見回ります。sticky message が最新メッセージではない場合、自動で一番下へ置き直します。
+
+```env
+AUTO_REFRESH_MINUTES=5
+```
+
+`0` にすると定期見回りを無効化できます。
 
 ## 複数サーバーで使う流れ
 
